@@ -25,6 +25,8 @@ Single Objective-C file, no dependencies.
 figment start 4k --hidpi          # 3840x2160, looks like 1920x1080
 figment start 2560x1600           # any size, at 1x
 figment list
+figment scale 12                  # the sizes display 12 can look like
+figment scale 12 2560x1440        # switch to one
 figment stop 12                   # by display ID
 figment stop                      # all of them
 ```
@@ -33,6 +35,11 @@ figment stop                      # all of them
 online. Sizes are in pixels; `--hidpi` renders at 2x, so the display
 looks like half that size. The 16:9 presets are `720p`, `1080p`, `1440p`,
 `4k`, `5k` and `8k`.
+
+A HiDPI display also offers the Larger Text to More Space sizes of a
+Retina panel, in Displays settings or through `figment scale`. Like on a
+real Mac, More Space renders at 2x too, so a 4K display that looks like
+2560x1440 is 5120x2880 pixels, and so are its screenshots.
 
 Each display is held by a background figment process and lasts until
 `figment stop`, logout or a restart. Ending that process some other way

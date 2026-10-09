@@ -3,14 +3,15 @@
  *
  * Each display is held by its own detached figment process, through the
  * private CGVirtualDisplay API, and lasts until that process ends. The
- * display's serial number is the holder's pid, so list and stop need no
- * state of their own: they find figment's displays by vendor number.
+ * display's serial number is the holder's pid, so the other commands need
+ * no state of their own: they find figment's displays by vendor number.
  */
 
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
 
 #include <mach-o/dyld.h>
+#include <math.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdio.h>
@@ -67,6 +68,7 @@ static void usage(void) {
     fprintf(stderr,
             "usage: figment start <width>x<height> | <preset> [--hidpi]\n"
             "       figment list\n"
+            "       figment scale <display id> [<width>x<height>]\n"
             "       figment stop [<display id> ...]\n"
             "presets:");
     for (size_t i = 0; i < sizeof kPresets / sizeof *kPresets; i++)
@@ -97,6 +99,44 @@ static bool online(CGDirectDisplayID id) {
     return false;
 }
 
+static bool parseSize(const char *s, unsigned int *width, unsigned int *height) {
+    char extra;
+    return sscanf(s, "%ux%u%c", width, height, &extra) == 2 && *width && *height;
+}
+
+static CGDirectDisplayID displayArg(const char *s) {
+    char *end;
+    unsigned long id = strtoul(s, &end, 10);
+    if (*end || !online((CGDirectDisplayID)id)) {
+        fprintf(stderr, "figment: no figment display %s\n", s);
+        exit(1);
+    }
+    return (CGDirectDisplayID)id;
+}
+
+/* Every mode of the display, with the HiDPI ones macOS hides by default. */
+static NSArray *allModes(CGDirectDisplayID display) {
+    NSDictionary *opts = @{(__bridge id)kCGDisplayShowDuplicateLowResolutionModes : @YES};
+    return CFBridgingRelease(CGDisplayCopyAllDisplayModes(display, (__bridge CFDictionaryRef)opts));
+}
+
+/* Switches to the sharpest mode that looks like width x height. */
+static void setLooksLike(CGDirectDisplayID display, size_t width, size_t height) {
+    CGDisplayModeRef best = NULL;
+    for (id m in allModes(display)) {
+        CGDisplayModeRef mode = (__bridge CGDisplayModeRef)m;
+        if (CGDisplayModeGetWidth(mode) == width && CGDisplayModeGetHeight(mode) == height &&
+            (!best || CGDisplayModeGetPixelWidth(mode) > CGDisplayModeGetPixelWidth(best)))
+            best = mode;
+    }
+    if (!best) die("the display has no such size, see figment scale <display id>");
+    CGDisplayConfigRef config;
+    CGBeginDisplayConfiguration(&config);
+    CGConfigureDisplayWithDisplayMode(config, display, best, NULL);
+    if (CGCompleteDisplayConfiguration(config, kCGConfigureForSession) != kCGErrorSuccess)
+        die("macOS refused that size, try a larger one");
+}
+
 /* Runs in the detached holder: creates the display, reports its id on
  * stdout once it is online, then lives until a signal ends it. */
 static int serve(unsigned int width, unsigned int height, bool hidpi) {
@@ -108,8 +148,9 @@ static int serve(unsigned int width, unsigned int height, bool hidpi) {
     desc.queue = dispatch_get_main_queue();
     desc.name = [NSString stringWithFormat:@"figment %ux%u%s", width, height,
                                            hidpi ? " HiDPI" : ""];
-    desc.maxPixelsWide = width;
-    desc.maxPixelsHigh = height;
+    /* Room for the More Space sizes below, which render at 2x as well. */
+    desc.maxPixelsWide = hidpi ? width * 4 / 3 : width;
+    desc.maxPixelsHigh = hidpi ? height * 4 / 3 : height;
     desc.sizeInMillimeters = CGSizeMake(width / ppi * 25.4, height / ppi * 25.4);
     desc.vendorID = kVendor;
     desc.productID = 1;
@@ -121,27 +162,23 @@ static int serve(unsigned int width, unsigned int height, bool hidpi) {
 
     CGVirtualDisplaySettings *settings = [CGVirtualDisplaySettings new];
     settings.hiDPI = hidpi;
-    settings.modes = @[ [[CGVirtualDisplayMode alloc] initWithWidth:width / scale
-                                                             height:height / scale
-                                                        refreshRate:60] ];
+    /* A HiDPI display gets a range of sizes, like a Retina panel's Larger
+     * Text to More Space, which also makes Displays settings show them so. */
+    NSMutableArray *list = [NSMutableArray array];
+    double factors[] = {1, 2 / 3.0, 5 / 6.0, 1.2, 4 / 3.0};
+    for (size_t i = 0; i < (hidpi ? 5 : 1); i++) {
+        unsigned int w = (unsigned int)lround(width / scale * factors[i]) & ~1u;
+        unsigned int h = (unsigned int)lround(height / scale * factors[i]) & ~1u;
+        [list addObject:[[CGVirtualDisplayMode alloc] initWithWidth:w height:h refreshRate:60]];
+    }
+    settings.modes = list;
     if (![display applySettings:settings]) die("could not apply the display mode");
 
     for (int i = 0; i < 100 && !online(display.displayID); i++) usleep(20000);
     if (!online(display.displayID)) die("the display did not come online");
 
     /* macOS adds scaled modes of its own and may default to one of them. */
-    NSDictionary *opts = @{(__bridge id)kCGDisplayShowDuplicateLowResolutionModes : @YES};
-    NSArray *modes = CFBridgingRelease(
-        CGDisplayCopyAllDisplayModes(display.displayID, (__bridge CFDictionaryRef)opts));
-    for (id m in modes) {
-        CGDisplayModeRef mode = (__bridge CGDisplayModeRef)m;
-        if (CGDisplayModeGetPixelWidth(mode) == width && CGDisplayModeGetPixelHeight(mode) == height &&
-            CGDisplayModeGetWidth(mode) == width / scale) {
-            if (CGDisplaySetDisplayMode(display.displayID, mode, NULL) != kCGErrorSuccess)
-                die("macOS refused that mode, try a larger size");
-            break;
-        }
-    }
+    setLooksLike(display.displayID, width / scale, height / scale);
 
     printf("%u\n", display.displayID);
     fflush(stdout);
@@ -164,14 +201,12 @@ static int serve(unsigned int width, unsigned int height, bool hidpi) {
 
 static int start(const char *size, bool hidpi) {
     unsigned int width = 0, height = 0;
-    char extra;
     for (size_t i = 0; i < sizeof kPresets / sizeof *kPresets; i++)
         if (!strcasecmp(size, kPresets[i].name)) {
             width = kPresets[i].width;
             height = kPresets[i].height;
         }
-    if (!width && (sscanf(size, "%ux%u%c", &width, &height, &extra) != 2 || !width || !height))
-        usage();
+    if (!width && !parseSize(size, &width, &height)) usage();
     if (hidpi && (width % 2 || height % 2)) die("--hidpi needs an even width and height");
 
     char exe[PATH_MAX];
@@ -220,23 +255,45 @@ static int list(void) {
     return 0;
 }
 
+static int scale(int argc, char **argv) {
+    CGDirectDisplayID display = displayArg(argv[0]);
+    if (argc == 2) {
+        unsigned int width, height;
+        if (!parseSize(argv[1], &width, &height)) usage();
+        setLooksLike(display, width, height);
+        return 0;
+    }
+    /* The sizes at the current mode's scale and aspect ratio, smallest
+     * first, current marked. */
+    CGDisplayModeRef current = CGDisplayCopyDisplayMode(display);
+    size_t factor = CGDisplayModeGetPixelWidth(current) / CGDisplayModeGetWidth(current);
+    double aspect = (double)CGDisplayModeGetWidth(current) / CGDisplayModeGetHeight(current);
+    NSMutableOrderedSet *sizes = [NSMutableOrderedSet orderedSet];
+    for (id m in allModes(display)) {
+        CGDisplayModeRef mode = (__bridge CGDisplayModeRef)m;
+        double a = (double)CGDisplayModeGetWidth(mode) / CGDisplayModeGetHeight(mode);
+        if (CGDisplayModeGetPixelWidth(mode) == CGDisplayModeGetWidth(mode) * factor &&
+            fabs(a - aspect) < 0.01)
+            [sizes addObject:[NSValue valueWithSize:NSMakeSize(CGDisplayModeGetWidth(mode),
+                                                               CGDisplayModeGetHeight(mode))]];
+    }
+    NSArray *sorted = [sizes.array sortedArrayUsingComparator:^(NSValue *a, NSValue *b) {
+        return [@(a.sizeValue.width * a.sizeValue.height) compare:@(b.sizeValue.width * b.sizeValue.height)];
+    }];
+    for (NSValue *v in sorted) {
+        bool now = v.sizeValue.width == CGDisplayModeGetWidth(current) &&
+                   v.sizeValue.height == CGDisplayModeGetHeight(current);
+        printf("%gx%g%s\n", v.sizeValue.width, v.sizeValue.height, now ? " *" : "");
+    }
+    CGDisplayModeRelease(current);
+    return 0;
+}
+
 static int stop(int argc, char **argv) {
     CGDirectDisplayID ids[64];
-    uint32_t n;
-    if (argc == 0) {
-        n = figmentDisplays(ids, 64);
-    } else {
-        n = 0;
-        for (int i = 0; i < argc && n < 64; i++) {
-            char *end;
-            unsigned long id = strtoul(argv[i], &end, 10);
-            if (*end || !online((CGDirectDisplayID)id)) {
-                fprintf(stderr, "figment: no figment display %s\n", argv[i]);
-                return 1;
-            }
-            ids[n++] = (CGDirectDisplayID)id;
-        }
-    }
+    uint32_t n = 0;
+    if (argc == 0) n = figmentDisplays(ids, 64);
+    for (int i = 0; i < argc && n < 64; i++) ids[n++] = displayArg(argv[i]);
     for (uint32_t i = 0; i < n; i++) kill((pid_t)CGDisplaySerialNumber(ids[i]), SIGTERM);
     for (uint32_t i = 0; i < n; i++)
         for (int t = 0; t < 100 && online(ids[i]); t++) usleep(20000);
@@ -255,6 +312,7 @@ int main(int argc, char **argv) {
             return start(argv[2], hidpi);
         }
         if (!strcmp(cmd, "list") && argc == 2) return list();
+        if (!strcmp(cmd, "scale") && argc >= 3 && argc <= 4) return scale(argc - 2, argv + 2);
         if (!strcmp(cmd, "stop")) return stop(argc - 2, argv + 2);
         usage();
     }
