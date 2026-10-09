@@ -67,7 +67,7 @@ static const struct {
 
 static void usage(void) {
     fprintf(stderr,
-            "usage: figment start <width>x<height> | <preset> [--hidpi]\n"
+            "usage: figment start <width>x<height> | <preset> [--hidpi | --no-hidpi]\n"
             "       figment list\n"
             "       figment scale <display id> [<width>x<height>]\n"
             "       figment stop [<display id> ...]\n"
@@ -207,7 +207,8 @@ static int serve(unsigned int width, unsigned int height, bool hidpi) {
     dispatch_main();
 }
 
-static int start(const char *size, bool hidpi) {
+/* hidpi is 1 or 0, or -1 to decide by size. */
+static int start(const char *size, int hidpi) {
     unsigned int width = 0, height = 0;
     for (size_t i = 0; i < sizeof kPresets / sizeof *kPresets; i++)
         if (!strcasecmp(size, kPresets[i].name)) {
@@ -215,7 +216,9 @@ static int start(const char *size, bool hidpi) {
             height = kPresets[i].height;
         }
     if (!width && !parseSize(size, &width, &height)) usage();
-    if (hidpi && (width % 2 || height % 2)) die("--hidpi needs an even width and height");
+    if (width % 2 || height % 2) die("the width and height need to be even");
+    /* From the smallest Retina Mac screen up, 2880x1800, like real panels. */
+    if (hidpi < 0) hidpi = width >= 2880;
 
     char exe[PATH_MAX];
     uint32_t len = sizeof exe;
@@ -315,8 +318,10 @@ int main(int argc, char **argv) {
         if (!strcmp(cmd, "_serve") && argc == 5)
             return serve((unsigned)atoi(argv[2]), (unsigned)atoi(argv[3]), !strcmp(argv[4], "1"));
         if (!strcmp(cmd, "start") && argc >= 3 && argc <= 4) {
-            bool hidpi = argc == 4;
-            if (hidpi && strcmp(argv[3], "--hidpi")) usage();
+            int hidpi = -1;
+            if (argc == 4 && !strcmp(argv[3], "--hidpi")) hidpi = 1;
+            else if (argc == 4 && !strcmp(argv[3], "--no-hidpi")) hidpi = 0;
+            else if (argc == 4) usage();
             return start(argv[2], hidpi);
         }
         if (!strcmp(cmd, "list") && argc == 2) return list();

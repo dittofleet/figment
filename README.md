@@ -22,8 +22,8 @@ Single Objective-C file, no dependencies.
 ## Usage
 
 ```sh
-figment start 4k --hidpi          # 3840x2160, looks like 1920x1080
-figment start 2560x1600           # any size, at 1x
+figment start 4k                  # 3840x2160, looks like 1920x1080
+figment start 2560x1600           # any even size
 figment list
 figment scale 12                  # the sizes display 12 can look like
 figment scale 12 2560x1440        # switch to one
@@ -32,9 +32,13 @@ figment stop                      # all of them
 ```
 
 `start` prints the new display's ID and returns once the display is
-online. Sizes are in pixels; `--hidpi` renders at 2x, so the display
-looks like half that size. The 16:9 presets are `720p`, `1080p`, `1440p`,
-`4k`, `5k` and `8k`.
+online. Sizes are in pixels. The 16:9 presets are `720p`, `1080p`,
+`1440p`, `4k`, `5k` and `8k`.
+
+Like on real monitors, displays 2880 pixels wide and up are HiDPI: they
+render at 2x and look like half their size, so a 4K display has the
+space of a 1080p one, with sharp text. `--hidpi` and `--no-hidpi`
+override that.
 
 A HiDPI display also offers the Larger Text to More Space sizes of a
 Retina panel, in Displays settings or through `figment scale`. Like on a
