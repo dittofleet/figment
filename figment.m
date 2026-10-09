@@ -5,7 +5,8 @@
  * private CGVirtualDisplay API, and lasts until that process ends. The
  * display's serial number is the holder's pid and its product number is
  * the N in its name, so the other commands need no state of their own:
- * they find figment's displays by vendor number.
+ * they find figment's displays by vendor number. The only files are a
+ * LaunchAgent per display, which brings it back at login until stopped.
  */
 
 #import <CoreGraphics/CoreGraphics.h>
@@ -165,23 +166,29 @@ static void setLooksLike(CGDirectDisplayID display, size_t width, size_t height)
     }
 }
 
-/* Runs in the detached holder: creates the display, reports its id on
- * stdout once it is online, then lives until it is killed. */
-static int serve(unsigned int width, unsigned int height, bool hidpi) {
+static NSString *agentLabel(unsigned int number) {
+    return [NSString stringWithFormat:@"dev.figment.%u", number];
+}
+
+static NSURL *loginAgent(unsigned int number) {
+    NSString *path = [NSString stringWithFormat:@"~/Library/LaunchAgents/%@.plist", agentLabel(number)];
+    return [NSURL fileURLWithPath:path.stringByExpandingTildeInPath];
+}
+
+/* Runs in the holder, spawned by start or by launchd at login: creates
+ * display `number`, reports its id on stdout once it is online, then lives
+ * until it is killed. */
+static int serve(unsigned int width, unsigned int height, bool hidpi, unsigned int number) {
     unsigned int scale = hidpi ? 2 : 1;
     /* Apple's own ~110 and ~220 ppi, so macOS sizes things as usual. */
     double ppi = 110.0 * scale;
 
     CGVirtualDisplayDescriptor *desc = [CGVirtualDisplayDescriptor new];
     desc.queue = dispatch_get_main_queue();
-    /* Numbered from 1, reusing the lowest number no display has. */
     CGDirectDisplayID ids[kMaxDisplays];
     uint32_t n = figmentDisplays(ids);
-    bool taken[kMaxDisplays + 2] = {false};
     for (uint32_t i = 0; i < n; i++)
-        if (CGDisplayModelNumber(ids[i]) <= kMaxDisplays + 1) taken[CGDisplayModelNumber(ids[i])] = true;
-    unsigned int number = 1;
-    while (taken[number]) number++;
+        if (CGDisplayModelNumber(ids[i]) == number) errx(1, "display number %u is taken", number);
     desc.name = [NSString stringWithFormat:@"Figment Virtual Display %u", number];
     /* Room for the More Space sizes below, which render at 2x as well. */
     desc.maxPixelsWide = hidpi ? width * 4 / 3 : width;
@@ -245,6 +252,19 @@ static int start(const char *size, int hidpi) {
     uint32_t len = sizeof exe;
     if (_NSGetExecutablePath(exe, &len) != 0) errx(1, "could not find its own executable");
 
+    /* Numbered from 1, skipping the numbers of running displays and of those
+     * set to come back at login. */
+    CGDirectDisplayID ids[kMaxDisplays];
+    uint32_t count = figmentDisplays(ids);
+    unsigned int number = 0;
+    bool taken;
+    do {
+        number++;
+        taken = [loginAgent(number) checkResourceIsReachableAndReturnError:nil];
+        for (uint32_t i = 0; i < count; i++)
+            if (CGDisplayModelNumber(ids[i]) == number) taken = true;
+    } while (taken);
+
     int out[2];
     if (pipe(out) != 0) errx(1, "pipe failed");
     posix_spawn_file_actions_t fa;
@@ -257,10 +277,11 @@ static int start(const char *size, int hidpi) {
     posix_spawnattr_init(&attr);
     posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
 
-    char w[16], h[16];
+    char w[16], h[16], num[16];
     snprintf(w, sizeof w, "%u", width);
     snprintf(h, sizeof h, "%u", height);
-    char *argv[] = {exe, "_serve", w, h, hidpi ? "1" : "0", NULL};
+    snprintf(num, sizeof num, "%u", number);
+    char *argv[] = {exe, "_serve", w, h, hidpi ? "1" : "0", num, NULL};
     pid_t pid;
     if (posix_spawn(&pid, exe, &fa, &attr, argv, environ) != 0) errx(1, "could not start the holder");
     close(out[1]);
@@ -269,6 +290,25 @@ static int start(const char *size, int hidpi) {
     ssize_t n = read(out[0], buf, sizeof buf - 1);
     if (n <= 0) return 1; /* the holder said why on stderr */
     fputs(buf, stdout);
+
+    /* The display is up, so have launchd bring it back at every login. */
+    NSMutableArray *args = [NSMutableArray array];
+    for (char **a = argv; *a; a++) [args addObject:@(*a)];
+    NSDictionary *agent = @{
+        @"Label" : agentLabel(number),
+        @"ProgramArguments" : args,
+        @"RunAtLoad" : @YES,
+        @"LimitLoadToSessionType" : @"Aqua",
+    };
+    NSURL *url = loginAgent(number);
+    [NSFileManager.defaultManager createDirectoryAtURL:url.URLByDeletingLastPathComponent
+                           withIntermediateDirectories:YES
+                                            attributes:nil
+                                                 error:nil];
+    if (![agent writeToURL:url error:nil]) {
+        warnx("the display is up, but could not set it to come back at login");
+        return 1;
+    }
     return 0;
 }
 
@@ -322,12 +362,33 @@ static int scale(int argc, char **argv) {
     return 0;
 }
 
+/* Stops a display coming back at login. */
+static bool forget(NSURL *agent) {
+    NSError *error;
+    if ([NSFileManager.defaultManager removeItemAtURL:agent error:&error] ||
+        error.code == NSFileNoSuchFileError)
+        return true;
+    warnx("could not remove %s", agent.path.UTF8String);
+    return false;
+}
+
 static int stop(int argc, char **argv) {
+    int status = 0;
     CGDirectDisplayID ids[kMaxDisplays];
     uint32_t n = 0;
-    if (argc == 0) n = figmentDisplays(ids);
+    if (argc == 0) {
+        n = figmentDisplays(ids);
+        /* All of them, including displays that were ended some other way. */
+        NSURL *dir = loginAgent(0).URLByDeletingLastPathComponent;
+        for (NSURL *url in [NSFileManager.defaultManager contentsOfDirectoryAtURL:dir
+                                                       includingPropertiesForKeys:nil
+                                                                          options:0
+                                                                            error:nil])
+            if ([url.lastPathComponent hasPrefix:@"dev.figment."] && !forget(url)) status = 1;
+    }
     for (int i = 0; i < argc && n < kMaxDisplays; i++) ids[n++] = displayArg(argv[i]);
     for (uint32_t i = 0; i < n; i++) {
+        if (!forget(loginAgent(CGDisplayModelNumber(ids[i])))) status = 1;
         /* The serial is the holder's pid, but it reads as 0 once the display
          * is gone, and kill(0) would hit this process group. Only figments. */
         pid_t pid = (pid_t)CGDisplaySerialNumber(ids[i]);
@@ -339,7 +400,6 @@ static int stop(int argc, char **argv) {
      * is user activity, so declare some, like caffeinate -u. */
     IOPMAssertionID activity;
     if (n) IOPMAssertionDeclareUserActivity(CFSTR("figment stop"), kIOPMUserActiveLocal, &activity);
-    int status = 0;
     for (uint32_t i = 0; i < n; i++)
         if (!waitOnline(ids[i], false)) {
             warnx("display %u is still there", ids[i]);
@@ -352,8 +412,9 @@ int main(int argc, char **argv) {
     @autoreleasepool {
         if (argc < 2) usage();
         const char *cmd = argv[1];
-        if (!strcmp(cmd, "_serve") && argc == 5)
-            return serve((unsigned)atoi(argv[2]), (unsigned)atoi(argv[3]), !strcmp(argv[4], "1"));
+        if (!strcmp(cmd, "_serve") && argc == 6)
+            return serve((unsigned)atoi(argv[2]), (unsigned)atoi(argv[3]), !strcmp(argv[4], "1"),
+                         (unsigned)atoi(argv[5]));
         if (!strcmp(cmd, "start") && argc >= 3 && argc <= 4) {
             int hidpi = -1;
             if (argc == 4) {
