@@ -50,8 +50,9 @@ Each display is held by a background figment process and comes back
 after logging out or restarting, at the same size and number, until
 `figment stop`. That uses a LaunchAgent per display, in
 `~/Library/LaunchAgents/dev.figment.<N>.plist`. Ending the process some
-other way removes the display until the next login. `figment stop`
-wakes the screen, since while it sleeps macOS waits to remove displays.
+other way removes the display until the next login, and `figment stop`
+without an ID clears those too. It also wakes the screen, since while it
+sleeps macOS waits to remove displays.
 
 To screenshot a display, `screencapture -D <n>` numbers displays from 1
 in the order macOS lists them, which is not the display ID.

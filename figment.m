@@ -305,7 +305,10 @@ static int start(const char *size, int hidpi) {
                            withIntermediateDirectories:YES
                                             attributes:nil
                                                  error:nil];
-    [agent writeToURL:url error:nil];
+    if (![agent writeToURL:url error:nil]) {
+        warnx("the display is up, but could not set it to come back at login");
+        return 1;
+    }
     return 0;
 }
 
@@ -359,13 +362,33 @@ static int scale(int argc, char **argv) {
     return 0;
 }
 
+/* Stops a display coming back at login. */
+static bool forget(NSURL *agent) {
+    NSError *error;
+    if ([NSFileManager.defaultManager removeItemAtURL:agent error:&error] ||
+        error.code == NSFileNoSuchFileError)
+        return true;
+    warnx("could not remove %s", agent.path.UTF8String);
+    return false;
+}
+
 static int stop(int argc, char **argv) {
+    int status = 0;
     CGDirectDisplayID ids[kMaxDisplays];
     uint32_t n = 0;
-    if (argc == 0) n = figmentDisplays(ids);
+    if (argc == 0) {
+        n = figmentDisplays(ids);
+        /* All of them, including displays that were ended some other way. */
+        NSURL *dir = loginAgent(0).URLByDeletingLastPathComponent;
+        for (NSURL *url in [NSFileManager.defaultManager contentsOfDirectoryAtURL:dir
+                                                       includingPropertiesForKeys:nil
+                                                                          options:0
+                                                                            error:nil])
+            if ([url.lastPathComponent hasPrefix:@"dev.figment."] && !forget(url)) status = 1;
+    }
     for (int i = 0; i < argc && n < kMaxDisplays; i++) ids[n++] = displayArg(argv[i]);
     for (uint32_t i = 0; i < n; i++) {
-        [NSFileManager.defaultManager removeItemAtURL:loginAgent(CGDisplayModelNumber(ids[i])) error:nil];
+        if (!forget(loginAgent(CGDisplayModelNumber(ids[i])))) status = 1;
         /* The serial is the holder's pid, but it reads as 0 once the display
          * is gone, and kill(0) would hit this process group. Only figments. */
         pid_t pid = (pid_t)CGDisplaySerialNumber(ids[i]);
@@ -377,7 +400,6 @@ static int stop(int argc, char **argv) {
      * is user activity, so declare some, like caffeinate -u. */
     IOPMAssertionID activity;
     if (n) IOPMAssertionDeclareUserActivity(CFSTR("figment stop"), kIOPMUserActiveLocal, &activity);
-    int status = 0;
     for (uint32_t i = 0; i < n; i++)
         if (!waitOnline(ids[i], false)) {
             warnx("display %u is still there", ids[i]);
