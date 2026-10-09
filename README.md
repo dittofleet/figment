@@ -1,0 +1,46 @@
+<img src="assets/icon.svg" width="80" alt="figment icon">
+
+# figment
+
+Virtual displays for your Mac, of any size, including 4K and HiDPI.
+
+Handy on a Mac with no monitor, or to give agents and screen sharing a
+bigger desktop than the one you have. Built on macOS's private
+CGVirtualDisplay API.
+
+Single Objective-C file, no dependencies.
+
+## Build & install
+
+```sh
+./install.sh   # builds, installs figment to ~/.local/bin
+```
+
+`FIGMENT_INSTALL_DIR=...` overrides the destination. Or `make`, and
+`make install` (to `/usr/local/bin`, `PREFIX=...` to override).
+
+## Usage
+
+```sh
+figment start 4k --hidpi          # 3840x2160, looks like 1920x1080
+figment start 2560x1600           # any size, at 1x
+figment list
+figment stop 12                   # by display ID
+figment stop                      # all of them
+```
+
+`start` prints the new display's ID and returns once the display is
+online. Sizes are in pixels; `--hidpi` renders at 2x, so the display
+looks like half that size. The 16:9 presets are `720p`, `1080p`, `1440p`,
+`4k`, `5k` and `8k`.
+
+Each display is held by a background figment process and lasts until
+`figment stop`, logout or a restart. Ending that process some other way
+removes its display too.
+
+To screenshot a display, `screencapture -D <n>` numbers displays from 1
+in the order macOS lists them, which is not the display ID.
+
+On a Mac with no monitor, macOS shows a 1920x1080 placeholder display.
+The first figment display takes its place, and it comes back once the
+last one stops.
