@@ -46,10 +46,12 @@ Retina panel, in Displays settings or through `figment scale`. Like on a
 real Mac, More Space renders at 2x too, so a 4K display that looks like
 2560x1440 is 5120x2880 pixels, and so are its screenshots.
 
-Each display is held by a background figment process and lasts until
-`figment stop`, logout or a restart. Ending that process some other way
-removes its display too. `figment stop` wakes the screen, since while it
-sleeps macOS waits to remove displays.
+Each display is held by a background figment process and comes back
+after logging out or restarting, at the same size and number, until
+`figment stop`. That uses a LaunchAgent per display, in
+`~/Library/LaunchAgents/dev.figment.<N>.plist`. Ending the process some
+other way removes the display until the next login. `figment stop`
+wakes the screen, since while it sleeps macOS waits to remove displays.
 
 To screenshot a display, `screencapture -D <n>` numbers displays from 1
 in the order macOS lists them, which is not the display ID.
