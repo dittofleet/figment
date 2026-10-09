@@ -14,6 +14,7 @@
 
 #include <ctype.h>
 #include <err.h>
+#include <libproc.h>
 #include <mach-o/dyld.h>
 #include <math.h>
 #include <signal.h>
@@ -139,24 +140,29 @@ static NSArray *allModes(CGDirectDisplayID display) {
 
 /* Switches to the sharpest mode that looks like width x height. */
 static void setLooksLike(CGDirectDisplayID display, size_t width, size_t height) {
-    CGDisplayModeRef best = NULL;
+    id bestMode = nil; /* strong, so it outlives the mode list */
     for (id m in allModes(display)) {
         CGDisplayModeRef mode = (__bridge CGDisplayModeRef)m;
         if (CGDisplayModeGetWidth(mode) == width && CGDisplayModeGetHeight(mode) == height &&
-            (!best || CGDisplayModeGetPixelWidth(mode) > CGDisplayModeGetPixelWidth(best)))
-            best = mode;
+            (!bestMode || CGDisplayModeGetPixelWidth(mode) >
+                              CGDisplayModeGetPixelWidth((__bridge CGDisplayModeRef)bestMode)))
+            bestMode = m;
     }
-    if (!best) errx(1, "the display has no such size, see figment scale <display id>");
+    if (!bestMode) errx(1, "the display has no such size, see figment scale <display id>");
+    CGDisplayModeRef best = (__bridge CGDisplayModeRef)bestMode;
     CGDisplayModeRef current = CGDisplayCopyDisplayMode(display);
+    if (!current) errx(1, "the display went away");
     bool already = CGDisplayModeGetWidth(current) == width && CGDisplayModeGetHeight(current) == height &&
                    CGDisplayModeGetPixelWidth(current) == CGDisplayModeGetPixelWidth(best);
     CGDisplayModeRelease(current);
     if (already) return;
     CGDisplayConfigRef config;
-    CGBeginDisplayConfiguration(&config);
-    CGConfigureDisplayWithDisplayMode(config, display, best, NULL);
-    if (CGCompleteDisplayConfiguration(config, kCGConfigureForSession) != kCGErrorSuccess)
+    if (CGBeginDisplayConfiguration(&config) != kCGErrorSuccess) errx(1, "could not configure the display");
+    if (CGConfigureDisplayWithDisplayMode(config, display, best, NULL) != kCGErrorSuccess ||
+        CGCompleteDisplayConfiguration(config, kCGConfigureForSession) != kCGErrorSuccess) {
+        CGCancelDisplayConfiguration(config);
         errx(1, "macOS refused that size, try a larger one");
+    }
 }
 
 /* Runs in the detached holder: creates the display, reports its id on
@@ -292,6 +298,7 @@ static int scale(int argc, char **argv) {
     /* The sizes at the current mode's scale and aspect ratio, smallest
      * first, current marked. */
     CGDisplayModeRef current = CGDisplayCopyDisplayMode(display);
+    if (!current) errx(1, "the display went away");
     size_t factor = CGDisplayModeGetPixelWidth(current) / CGDisplayModeGetWidth(current);
     double aspect = (double)CGDisplayModeGetWidth(current) / CGDisplayModeGetHeight(current);
     NSMutableSet *sizes = [NSMutableSet set];
@@ -320,13 +327,25 @@ static int stop(int argc, char **argv) {
     uint32_t n = 0;
     if (argc == 0) n = figmentDisplays(ids);
     for (int i = 0; i < argc && n < kMaxDisplays; i++) ids[n++] = displayArg(argv[i]);
-    for (uint32_t i = 0; i < n; i++) kill((pid_t)CGDisplaySerialNumber(ids[i]), SIGTERM);
+    for (uint32_t i = 0; i < n; i++) {
+        /* The serial is the holder's pid, but it reads as 0 once the display
+         * is gone, and kill(0) would hit this process group. Only figments. */
+        pid_t pid = (pid_t)CGDisplaySerialNumber(ids[i]);
+        char name[64];
+        if (pid > 1 && proc_name(pid, name, sizeof name) > 0 && !strcmp(name, getprogname()))
+            kill(pid, SIGTERM);
+    }
     /* While the screen sleeps, macOS holds off removing displays until there
      * is user activity, so declare some, like caffeinate -u. */
     IOPMAssertionID activity;
     if (n) IOPMAssertionDeclareUserActivity(CFSTR("figment stop"), kIOPMUserActiveLocal, &activity);
-    for (uint32_t i = 0; i < n; i++) waitOnline(ids[i], false);
-    return 0;
+    int status = 0;
+    for (uint32_t i = 0; i < n; i++)
+        if (!waitOnline(ids[i], false)) {
+            warnx("display %u is still there", ids[i]);
+            status = 1;
+        }
+    return status;
 }
 
 int main(int argc, char **argv) {

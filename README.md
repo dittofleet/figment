@@ -39,7 +39,7 @@ count. The 16:9 presets are `720p`, `1080p`, `1440p`, `4k`, `5k` and
 Like on real monitors, displays 2880 pixels wide and up are HiDPI: they
 render at 2x and look like half their size, so a 4K display has the
 space of a 1080p one, with sharp text. `--hidpi` and `--no-hidpi`
-override that.
+override that. HiDPI sizes round down to a multiple of 4.
 
 A HiDPI display also offers the Larger Text to More Space sizes of a
 Retina panel, in Displays settings or through `figment scale`. Like on a
