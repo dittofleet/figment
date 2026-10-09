@@ -166,20 +166,19 @@ static void setLooksLike(CGDirectDisplayID display, size_t width, size_t height)
     }
 }
 
-static void ownPath(char exe[PATH_MAX]) {
-    uint32_t len = PATH_MAX;
-    if (_NSGetExecutablePath(exe, &len) != 0) errx(1, "could not find its own executable");
+static NSString *agentLabel(unsigned int number) {
+    return [NSString stringWithFormat:@"dev.figment.%u", number];
 }
 
 static NSURL *loginAgent(unsigned int number) {
-    NSString *path = [NSString stringWithFormat:@"~/Library/LaunchAgents/dev.figment.%u.plist", number];
+    NSString *path = [NSString stringWithFormat:@"~/Library/LaunchAgents/%@.plist", agentLabel(number)];
     return [NSURL fileURLWithPath:path.stringByExpandingTildeInPath];
 }
 
-/* Runs in the holder: creates display number `wanted` if free, else the
- * lowest free number, reports its id on stdout once it is online, makes it
- * come back at login, then lives until it is killed. */
-static int serve(unsigned int width, unsigned int height, bool hidpi, unsigned int wanted) {
+/* Runs in the holder, spawned by start or by launchd at login: creates
+ * display `number`, reports its id on stdout once it is online, then lives
+ * until it is killed. */
+static int serve(unsigned int width, unsigned int height, bool hidpi, unsigned int number) {
     unsigned int scale = hidpi ? 2 : 1;
     /* Apple's own ~110 and ~220 ppi, so macOS sizes things as usual. */
     double ppi = 110.0 * scale;
@@ -188,12 +187,8 @@ static int serve(unsigned int width, unsigned int height, bool hidpi, unsigned i
     desc.queue = dispatch_get_main_queue();
     CGDirectDisplayID ids[kMaxDisplays];
     uint32_t n = figmentDisplays(ids);
-    bool taken[kMaxDisplays + 2] = {false};
     for (uint32_t i = 0; i < n; i++)
-        if (CGDisplayModelNumber(ids[i]) <= kMaxDisplays + 1) taken[CGDisplayModelNumber(ids[i])] = true;
-    unsigned int number = 1;
-    if (wanted >= 1 && wanted <= kMaxDisplays + 1 && !taken[wanted]) number = wanted;
-    else while (taken[number]) number++;
+        if (CGDisplayModelNumber(ids[i]) == number) errx(1, "display number %u is taken", number);
     desc.name = [NSString stringWithFormat:@"Figment Virtual Display %u", number];
     /* Room for the More Space sizes below, which render at 2x as well. */
     desc.maxPixelsWide = hidpi ? width * 4 / 3 : width;
@@ -229,24 +224,6 @@ static int serve(unsigned int width, unsigned int height, bool hidpi, unsigned i
 
     printf("%u\n", display.displayID);
     fflush(stdout);
-
-    char exe[PATH_MAX];
-    ownPath(exe);
-    NSDictionary *agent = @{
-        @"Label" : [NSString stringWithFormat:@"dev.figment.%u", number],
-        @"ProgramArguments" : @[
-            @(exe), @"_serve", @(width).stringValue, @(height).stringValue, hidpi ? @"1" : @"0",
-            @(number).stringValue
-        ],
-        @"RunAtLoad" : @YES,
-        @"LimitLoadToSessionType" : @"Aqua",
-    };
-    NSURL *url = loginAgent(number);
-    [NSFileManager.defaultManager createDirectoryAtURL:url.URLByDeletingLastPathComponent
-                           withIntermediateDirectories:YES
-                                            attributes:nil
-                                                 error:nil];
-    [agent writeToURL:url error:nil];
     int null = open("/dev/null", O_RDWR);
     dup2(null, STDOUT_FILENO);
     dup2(null, STDERR_FILENO);
@@ -272,7 +249,21 @@ static int start(const char *size, int hidpi) {
     if (hidpi < 0) hidpi = width >= 2880;
 
     char exe[PATH_MAX];
-    ownPath(exe);
+    uint32_t len = sizeof exe;
+    if (_NSGetExecutablePath(exe, &len) != 0) errx(1, "could not find its own executable");
+
+    /* Numbered from 1, skipping the numbers of running displays and of those
+     * set to come back at login. */
+    CGDirectDisplayID ids[kMaxDisplays];
+    uint32_t count = figmentDisplays(ids);
+    unsigned int number = 0;
+    bool taken;
+    do {
+        number++;
+        taken = [loginAgent(number) checkResourceIsReachableAndReturnError:nil];
+        for (uint32_t i = 0; i < count; i++)
+            if (CGDisplayModelNumber(ids[i]) == number) taken = true;
+    } while (taken);
 
     int out[2];
     if (pipe(out) != 0) errx(1, "pipe failed");
@@ -286,10 +277,11 @@ static int start(const char *size, int hidpi) {
     posix_spawnattr_init(&attr);
     posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
 
-    char w[16], h[16];
+    char w[16], h[16], num[16];
     snprintf(w, sizeof w, "%u", width);
     snprintf(h, sizeof h, "%u", height);
-    char *argv[] = {exe, "_serve", w, h, hidpi ? "1" : "0", "0", NULL};
+    snprintf(num, sizeof num, "%u", number);
+    char *argv[] = {exe, "_serve", w, h, hidpi ? "1" : "0", num, NULL};
     pid_t pid;
     if (posix_spawn(&pid, exe, &fa, &attr, argv, environ) != 0) errx(1, "could not start the holder");
     close(out[1]);
@@ -298,6 +290,22 @@ static int start(const char *size, int hidpi) {
     ssize_t n = read(out[0], buf, sizeof buf - 1);
     if (n <= 0) return 1; /* the holder said why on stderr */
     fputs(buf, stdout);
+
+    /* The display is up, so have launchd bring it back at every login. */
+    NSMutableArray *args = [NSMutableArray array];
+    for (char **a = argv; *a; a++) [args addObject:@(*a)];
+    NSDictionary *agent = @{
+        @"Label" : agentLabel(number),
+        @"ProgramArguments" : args,
+        @"RunAtLoad" : @YES,
+        @"LimitLoadToSessionType" : @"Aqua",
+    };
+    NSURL *url = loginAgent(number);
+    [NSFileManager.defaultManager createDirectoryAtURL:url.URLByDeletingLastPathComponent
+                           withIntermediateDirectories:YES
+                                            attributes:nil
+                                                 error:nil];
+    [agent writeToURL:url error:nil];
     return 0;
 }
 
