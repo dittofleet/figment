@@ -32,8 +32,9 @@ figment stop                      # all of them
 ```
 
 `start` prints the new display's ID and returns once the display is
-online. Sizes are in pixels. The 16:9 presets are `720p`, `1080p`,
-`1440p`, `4k`, `5k` and `8k`.
+online. Sizes are in pixels, even, from 720 a side up to 8K's pixel
+count. The 16:9 presets are `720p`, `1080p`, `1440p`, `4k`, `5k` and
+`8k`.
 
 Like on real monitors, displays 2880 pixels wide and up are HiDPI: they
 render at 2x and look like half their size, so a 4K display has the
@@ -47,7 +48,8 @@ real Mac, More Space renders at 2x too, so a 4K display that looks like
 
 Each display is held by a background figment process and lasts until
 `figment stop`, logout or a restart. Ending that process some other way
-removes its display too.
+removes its display too. While the screen is asleep, macOS only removes
+a stopped display once the screen wakes.
 
 To screenshot a display, `screencapture -D <n>` numbers displays from 1
 in the order macOS lists them, which is not the display ID.

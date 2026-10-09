@@ -11,6 +11,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
 
+#include <ctype.h>
 #include <mach-o/dyld.h>
 #include <math.h>
 #include <signal.h>
@@ -100,9 +101,17 @@ static bool online(CGDirectDisplayID id) {
     return false;
 }
 
+/* <width>x<height>, up to 5 digits each. */
 static bool parseSize(const char *s, unsigned int *width, unsigned int *height) {
-    char extra;
-    return sscanf(s, "%ux%u%c", width, height, &extra) == 2 && *width && *height;
+    char *x, *end;
+    if (!isdigit(s[0])) return false;
+    unsigned long w = strtoul(s, &x, 10);
+    if (*x != 'x' || !isdigit(x[1]) || x - s > 5) return false;
+    unsigned long h = strtoul(x + 1, &end, 10);
+    if (*end || end - x > 6 || !w || !h) return false;
+    *width = (unsigned int)w;
+    *height = (unsigned int)h;
+    return true;
 }
 
 static CGDirectDisplayID displayArg(const char *s) {
@@ -216,6 +225,9 @@ static int start(const char *size, int hidpi) {
             height = kPresets[i].height;
         }
     if (!width && !parseSize(size, &width, &height)) usage();
+    /* Other sizes are untested, and a tiny display crashed WindowServer. */
+    if (width < 720 || height < 720 || width * height > 7680 * 4320)
+        die("sizes go from 720 pixels a side up to 8K's pixel count");
     if (width % 2 || height % 2) die("the width and height need to be even");
     /* From the smallest Retina Mac screen up, 2880x1800, like real panels. */
     if (hidpi < 0) hidpi = width >= 2880;
