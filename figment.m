@@ -241,7 +241,12 @@ static int serve(unsigned int width, unsigned int height, bool hidpi, unsigned i
         @"RunAtLoad" : @YES,
         @"LimitLoadToSessionType" : @"Aqua",
     };
-    [agent writeToURL:loginAgent(number) error:nil];
+    NSURL *url = loginAgent(number);
+    [NSFileManager.defaultManager createDirectoryAtURL:url.URLByDeletingLastPathComponent
+                           withIntermediateDirectories:YES
+                                            attributes:nil
+                                                 error:nil];
+    [agent writeToURL:url error:nil];
     int null = open("/dev/null", O_RDWR);
     dup2(null, STDOUT_FILENO);
     dup2(null, STDERR_FILENO);
