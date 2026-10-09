@@ -74,14 +74,14 @@ static const struct {
 
 static void usage(void) {
     fprintf(stderr,
-            "usage: figment start <width>x<height> | <preset> [--hidpi | --no-hidpi]\n"
+            "usage: figment start <width>x<height> | <preset> [--hidpi | --no-hidpi] [--hz <rate>]\n"
             "       figment list\n"
             "       figment scale <display id> [<width>x<height>]\n"
             "       figment stop [<display id> ...]\n"
             "presets:");
     for (size_t i = 0; i < sizeof kPresets / sizeof *kPresets; i++)
         fprintf(stderr, " %s", kPresets[i].name);
-    fprintf(stderr, "\n");
+    fprintf(stderr, "\nrates: 30 60 120 144 240, 60 by default\n");
     exit(1);
 }
 
@@ -178,7 +178,7 @@ static NSURL *loginAgent(unsigned int number) {
 /* Runs in the holder, spawned by start or by launchd at login: creates
  * display `number`, reports its id on stdout once it is online, then lives
  * until it is killed. */
-static int serve(unsigned int width, unsigned int height, bool hidpi, unsigned int number) {
+static int serve(unsigned int width, unsigned int height, bool hidpi, unsigned int number, unsigned int hz) {
     unsigned int scale = hidpi ? 2 : 1;
     /* Apple's own ~110 and ~220 ppi, so macOS sizes things as usual. */
     double ppi = 110.0 * scale;
@@ -211,7 +211,7 @@ static int serve(unsigned int width, unsigned int height, bool hidpi, unsigned i
     for (size_t i = 0; i < (hidpi ? 5 : 1); i++) {
         unsigned int w = (unsigned int)lround(width / scale * factors[i]) & ~1u;
         unsigned int h = (unsigned int)lround(height / scale * factors[i]) & ~1u;
-        [list addObject:[[CGVirtualDisplayMode alloc] initWithWidth:w height:h refreshRate:60]];
+        [list addObject:[[CGVirtualDisplayMode alloc] initWithWidth:w height:h refreshRate:hz]];
     }
     settings.modes = list;
     if (![display applySettings:settings]) errx(1, "could not apply the display mode");
@@ -233,7 +233,7 @@ static int serve(unsigned int width, unsigned int height, bool hidpi, unsigned i
 }
 
 /* hidpi is 1 or 0, or -1 to decide by size. */
-static int start(const char *size, int hidpi) {
+static int start(const char *size, int hidpi, unsigned int hz) {
     unsigned int width = 0, height = 0;
     for (size_t i = 0; i < sizeof kPresets / sizeof *kPresets; i++)
         if (!strcasecmp(size, kPresets[i].name)) {
@@ -245,6 +245,9 @@ static int start(const char *size, int hidpi) {
     if (width < 720 || height < 720 || (uint64_t)width * height > 7680 * 4320)
         errx(1, "sizes go from 720 pixels a side up to 8K's pixel count");
     if (width % 2 || height % 2) errx(1, "the width and height need to be even");
+    /* The rates tested to work. */
+    if (hz != 30 && hz != 60 && hz != 120 && hz != 144 && hz != 240)
+        errx(1, "the rate can be 30, 60, 120, 144 or 240");
     /* From the smallest Retina Mac screen up, 2880x1800, like real panels. */
     if (hidpi < 0) hidpi = width >= 2880;
 
@@ -277,11 +280,12 @@ static int start(const char *size, int hidpi) {
     posix_spawnattr_init(&attr);
     posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
 
-    char w[16], h[16], num[16];
+    char w[16], h[16], num[16], rate[16];
     snprintf(w, sizeof w, "%u", width);
     snprintf(h, sizeof h, "%u", height);
     snprintf(num, sizeof num, "%u", number);
-    char *argv[] = {exe, "_serve", w, h, hidpi ? "1" : "0", num, NULL};
+    snprintf(rate, sizeof rate, "%u", hz);
+    char *argv[] = {exe, "_serve", w, h, hidpi ? "1" : "0", num, rate, NULL};
     pid_t pid;
     if (posix_spawn(&pid, exe, &fa, &attr, argv, environ) != 0) errx(1, "could not start the holder");
     close(out[1]);
@@ -319,10 +323,11 @@ static int list(void) {
         CGDisplayModeRef mode = CGDisplayCopyDisplayMode(ids[i]);
         size_t pw = CGDisplayModeGetPixelWidth(mode), ph = CGDisplayModeGetPixelHeight(mode);
         size_t w = CGDisplayModeGetWidth(mode), h = CGDisplayModeGetHeight(mode);
+        double hz = CGDisplayModeGetRefreshRate(mode);
         CGDisplayModeRelease(mode);
         printf("%u\t%zux%zu", ids[i], pw, ph);
         if (pw != w) printf(" HiDPI (looks like %zux%zu)", w, h);
-        printf("\tpid %u\n", CGDisplaySerialNumber(ids[i]));
+        printf(" %g Hz\tpid %u\n", hz, CGDisplaySerialNumber(ids[i]));
     }
     return 0;
 }
@@ -412,17 +417,19 @@ int main(int argc, char **argv) {
     @autoreleasepool {
         if (argc < 2) usage();
         const char *cmd = argv[1];
-        if (!strcmp(cmd, "_serve") && argc == 6)
+        if (!strcmp(cmd, "_serve") && argc == 7)
             return serve((unsigned)atoi(argv[2]), (unsigned)atoi(argv[3]), !strcmp(argv[4], "1"),
-                         (unsigned)atoi(argv[5]));
-        if (!strcmp(cmd, "start") && argc >= 3 && argc <= 4) {
+                         (unsigned)atoi(argv[5]), (unsigned)atoi(argv[6]));
+        if (!strcmp(cmd, "start") && argc >= 3) {
             int hidpi = -1;
-            if (argc == 4) {
-                if (!strcmp(argv[3], "--hidpi")) hidpi = 1;
-                else if (!strcmp(argv[3], "--no-hidpi")) hidpi = 0;
+            unsigned int hz = 60;
+            for (int i = 3; i < argc; i++) {
+                if (!strcmp(argv[i], "--hidpi")) hidpi = 1;
+                else if (!strcmp(argv[i], "--no-hidpi")) hidpi = 0;
+                else if (!strcmp(argv[i], "--hz") && i + 1 < argc) hz = (unsigned)atoi(argv[++i]);
                 else usage();
             }
-            return start(argv[2], hidpi);
+            return start(argv[2], hidpi, hz);
         }
         if (!strcmp(cmd, "list") && argc == 2) return list();
         if (!strcmp(cmd, "scale") && argc >= 3 && argc <= 4) return scale(argc - 2, argv + 2);

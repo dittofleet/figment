@@ -24,6 +24,7 @@ Single Objective-C file, no dependencies.
 ```sh
 figment start 4k                  # 3840x2160, looks like 1920x1080
 figment start 2560x1600           # any even size
+figment start 4k --hz 120         # at 120 Hz, for smooth animations
 figment list
 figment scale 12                  # the sizes display 12 can look like
 figment scale 12 2560x1440        # switch to one
@@ -40,6 +41,10 @@ Like on real monitors, displays 2880 pixels wide and up are HiDPI: they
 render at 2x and look like half their size, so a 4K display has the
 space of a 1080p one, with sharp text. `--hidpi` and `--no-hidpi`
 override that. HiDPI sizes round down to a multiple of 4.
+
+Displays run at 60 Hz. `--hz` sets 30, 120, 144 or 240 instead, for
+working on animations or recording them, and the display keeps that rate
+across `figment scale` and logins.
 
 A HiDPI display also offers the Larger Text to More Space sizes of a
 Retina panel, in Displays settings or through `figment scale`. Like on a
