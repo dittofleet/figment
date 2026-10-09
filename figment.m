@@ -3,8 +3,9 @@
  *
  * Each display is held by its own detached figment process, through the
  * private CGVirtualDisplay API, and lasts until that process ends. The
- * display's serial number is the holder's pid, so the other commands need
- * no state of their own: they find figment's displays by vendor number.
+ * display's serial number is the holder's pid and its product number is
+ * the N in its name, so the other commands need no state of their own:
+ * they find figment's displays by vendor number.
  */
 
 #import <CoreGraphics/CoreGraphics.h>
@@ -146,14 +147,21 @@ static int serve(unsigned int width, unsigned int height, bool hidpi) {
 
     CGVirtualDisplayDescriptor *desc = [CGVirtualDisplayDescriptor new];
     desc.queue = dispatch_get_main_queue();
-    desc.name = [NSString stringWithFormat:@"figment %ux%u%s", width, height,
-                                           hidpi ? " HiDPI" : ""];
+    /* Numbered from 1, reusing the lowest number no display has. */
+    CGDirectDisplayID ids[64];
+    uint32_t n = figmentDisplays(ids, 64);
+    bool taken[66] = {false};
+    for (uint32_t i = 0; i < n; i++)
+        if (CGDisplayModelNumber(ids[i]) <= 65) taken[CGDisplayModelNumber(ids[i])] = true;
+    unsigned int number = 1;
+    while (taken[number]) number++;
+    desc.name = [NSString stringWithFormat:@"Figment Virtual Display %u", number];
     /* Room for the More Space sizes below, which render at 2x as well. */
     desc.maxPixelsWide = hidpi ? width * 4 / 3 : width;
     desc.maxPixelsHigh = hidpi ? height * 4 / 3 : height;
     desc.sizeInMillimeters = CGSizeMake(width / ppi * 25.4, height / ppi * 25.4);
     desc.vendorID = kVendor;
-    desc.productID = 1;
+    desc.productID = number;
     desc.serialNum = (unsigned int)getpid();
     desc.terminationHandler = ^(__unused id d, __unused CGVirtualDisplay *v) { exit(0); };
 
