@@ -81,7 +81,7 @@ static void usage(void) {
             "presets:");
     for (size_t i = 0; i < sizeof kPresets / sizeof *kPresets; i++)
         fprintf(stderr, " %s", kPresets[i].name);
-    fprintf(stderr, "\nrates: 30 60 120 144 240, 60 by default\n");
+    fprintf(stderr, "\n");
     exit(1);
 }
 
@@ -426,8 +426,11 @@ int main(int argc, char **argv) {
             for (int i = 3; i < argc; i++) {
                 if (!strcmp(argv[i], "--hidpi")) hidpi = 1;
                 else if (!strcmp(argv[i], "--no-hidpi")) hidpi = 0;
-                else if (!strcmp(argv[i], "--hz") && i + 1 < argc) hz = (unsigned)atoi(argv[++i]);
-                else usage();
+                else if (!strcmp(argv[i], "--hz") && i + 1 < argc) {
+                    char *end;
+                    hz = (unsigned)strtoul(argv[++i], &end, 10);
+                    if (*end) usage();
+                } else usage();
             }
             return start(argv[2], hidpi, hz);
         }
