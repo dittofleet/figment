@@ -48,8 +48,8 @@ real Mac, More Space renders at 2x too, so a 4K display that looks like
 
 Each display is held by a background figment process and lasts until
 `figment stop`, logout or a restart. Ending that process some other way
-removes its display too. While the screen is asleep, macOS only removes
-a stopped display once the screen wakes.
+removes its display too. `figment stop` wakes the screen, since while it
+sleeps macOS waits to remove displays.
 
 To screenshot a display, `screencapture -D <n>` numbers displays from 1
 in the order macOS lists them, which is not the display ID.

@@ -1,7 +1,7 @@
 PREFIX ?= /usr/local
 CC      = clang
 CFLAGS  = -O2 -Wall -Wextra -fobjc-arc
-LDFLAGS = -framework Foundation -framework CoreGraphics
+LDFLAGS = -framework Foundation -framework CoreGraphics -framework IOKit
 
 figment: figment.m
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
