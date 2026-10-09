@@ -428,8 +428,9 @@ int main(int argc, char **argv) {
                 else if (!strcmp(argv[i], "--no-hidpi")) hidpi = 0;
                 else if (!strcmp(argv[i], "--hz") && i + 1 < argc) {
                     char *end;
-                    hz = (unsigned)strtoul(argv[++i], &end, 10);
+                    unsigned long rate = strtoul(argv[++i], &end, 10);
                     if (*end) usage();
+                    hz = rate > 240 ? 0 : (unsigned)rate; /* 0 is refused below */
                 } else usage();
             }
             return start(argv[2], hidpi, hz);
